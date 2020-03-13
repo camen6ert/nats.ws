@@ -17,9 +17,9 @@ import * as pkg from "../package.json"
 import {ConnectionOptions, Msg, Payload} from "./nats"
 import {Transport, TransportHandlers, WSTransport} from "./transport"
 import {ErrorCode, NatsError} from "./error"
-import {buildWSMessage, extend, extractProtocolMessage, settle} from "./util"
+import {buildWSMessage, extend, settle} from "./util"
 import {Nuid} from "js-nuid"
-import {DataBuffer} from "./databuffer"
+import {DataBuffer, InboundBuffer} from "./databuffer"
 
 const nuid = new Nuid()
 
@@ -388,9 +388,9 @@ export class MsgBuffer {
 
 export class ProtocolHandler implements TransportHandlers {
     clientHandlers: ClientHandlers;
-    connectError!: ErrorCallback | null;
-    inbound: DataBuffer;
-    infoReceived: boolean = false;
+    connectError!: ErrorCallback | null
+    inbound: InboundBuffer
+    infoReceived: boolean = false
     muxSubscriptions: MuxSubscription
     options: ConnectionOptions
     outbound: DataBuffer
@@ -407,7 +407,7 @@ export class ProtocolHandler implements TransportHandlers {
         this.clientHandlers = handlers
         this.subscriptions = new Subscriptions()
         this.muxSubscriptions = new MuxSubscription()
-        this.inbound = new DataBuffer()
+        this.inbound = new InboundBuffer()
         this.outbound = new DataBuffer()
     }
 
@@ -462,21 +462,26 @@ export class ProtocolHandler implements TransportHandlers {
         while (this.inbound.size()) {
             switch (this.state) {
                 case ParserState.CLOSED:
-                    return;
+                    return
                 case ParserState.AWAITING_CONTROL:
-                    let raw = this.inbound.peek();
-                    let buf = extractProtocolMessage(raw);
-
+                    // see if we match a control line
+                    let pb = this.inbound.protoLen()
+                    if (pb === -1) {
+                        return
+                    }
+                    // extract the control line
+                    let raw = this.inbound.drain(pb)
+                    let buf = DataBuffer.toAscii(raw)
                     if ((m = MSG.exec(buf))) {
                         this.payload = new MsgBuffer(this.clientHandlers, m, this.options.payload)
                         this.state = ParserState.AWAITING_MSG_PAYLOAD
                     } else if ((m = OK.exec(buf))) {
                         // ignored
                     } else if ((m = ERR.exec(buf))) {
-                        this.processError(m[1]);
-                        return;
+                        this.processError(m[1])
+                        return
                     } else if ((m = PONG.exec(buf))) {
-                        this.pout = 0;
+                        this.pout = 0
                         let cb = this.pongs.shift();
                         if (cb) {
                             cb();
@@ -496,43 +501,31 @@ export class ProtocolHandler implements TransportHandlers {
                             this.sendSubscriptions();
                             this.transport.write(buildWSMessage(`PING ${CR_LF}`));
                             this.infoReceived = true;
-                            this.flushPending();
+                            this.flushPending()
                         }
                     } else {
-                        return;
+                        return
                     }
-                    break;
+                    break
                 case ParserState.AWAITING_MSG_PAYLOAD:
                     if (!this.payload) {
-                        break;
+                        break
                     }
-                    // drain what we have collected
-                    if (this.inbound.size() < this.payload.length) {
-                        let d = this.inbound.drain();
-                        this.payload.fill(d);
-                        return;
+                    if (this.inbound.size() >= this.payload.length) {
+                        let d = this.inbound.drain(this.payload.length)
+                        this.payload.fill(d)
+                        try {
+                            this.processMsg()
+                        } catch (ex) {
+                            // ignore exception in client handling
+                        }
+                        this.state = ParserState.AWAITING_CONTROL
+                        this.payload = null
+                        break
+                    } else {
+                        // wait for more data from server
+                        return
                     }
-                    // drain the number of bytes we need
-                    let dd = this.inbound.drain(this.payload.length);
-                    this.payload.fill(dd);
-                    try {
-                        this.processMsg();
-                    } catch (ex) {
-                        // ignore exception in client handling
-                    }
-                    this.state = ParserState.AWAITING_CONTROL;
-                    this.payload = null;
-                    break;
-            }
-
-            if (m) {
-                let psize = m[0].length;
-                if (psize >= this.inbound.size()) {
-                    this.inbound.drain();
-                } else {
-                    this.inbound.drain(psize);
-                }
-                m = null;
             }
         }
     }

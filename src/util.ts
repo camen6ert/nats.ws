@@ -34,6 +34,7 @@ export function extend(a: any, ...b: any[]): any {
 }
 
 function protoLen(a: ArrayBuffer): number {
+    // protocol line will have a CRLF
     let ba = new Uint8Array(a);
     for (let i = 0; i < ba.byteLength; i++) {
         let n = i + 1;
