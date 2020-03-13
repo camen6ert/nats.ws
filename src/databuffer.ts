@@ -78,27 +78,31 @@ export class DataBuffer {
     const rv = new ArrayBuffer(n)
     const bv = new Uint8Array(rv)
     let need = n
-
     for (let i = 0, max = this.buffers.length; i < max; i++) {
       if (need === 0) {
         break
       }
       let d = this.buffers.shift()
       if (d === undefined) {
+        // shouldn't happen, but makes typescript happy
         throw new Error("array out of bounds!")
       }
-      const dv = new Uint8Array(d)
-      if (d.byteLength > need) {
+      if (d.byteLength >= need) {
         const dd = d.slice(0, need)
-        this.buffers.unshift(d.slice(need))
+        const extra = d.slice(need)
+        if (extra.byteLength) {
+          this.buffers.unshift(extra)
+        }
         this.byteLength -= dd.byteLength
         if (i === 0) {
           // we are done, no need to copy
           return dd
         }
+        const dv = new Uint8Array(dd)
         bv.set(dv, n - need)
         need = 0
       } else {
+        const dv = new Uint8Array(d)
         bv.set(dv, n - need)
         need -= d.byteLength
         this.byteLength -= d.byteLength
